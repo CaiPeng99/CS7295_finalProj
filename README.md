@@ -1,7 +1,7 @@
 # CS7295_finalProj
 
 A Python script that uses LangGraph with  **Google Gemini** to:
-- Select and validate up to 3 columns from a CSV file
+- Select and validate up to 5 columns from a CSV file
 - Categorize columns (categorical, temporal, numerical) using few-shot prompting
 - Generate Vega-Lite JSON specifications for multiple chart types
 - Provide explanations of chart types, their strengths, and weaknesses
