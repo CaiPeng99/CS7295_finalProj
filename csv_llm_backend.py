@@ -18,7 +18,7 @@ from typing import TypedDict, Annotated, List, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 
 
@@ -40,7 +40,7 @@ def estimate_tokens(text: str, model: str = "gemini-2.5-flash-lite") -> int:
     return len(text) // 4
 
 
-def load_csv_dataframe(csv_path: str) -> tuple[pd.DataFrame, Optional[str]]:
+def load_csv_dataframe(csv_path: str) -> tuple[Optional[pd.DataFrame], Optional[str]]:
     """Load CSV file as a pandas DataFrame."""
     try:
         df = pd.read_csv(csv_path)
@@ -110,6 +110,24 @@ Response: {"timestamp": "temporal", "temperature": "numerical", "humidity": "num
 Now analyze the following columns and return ONLY a JSON object with the categorization:"""
 
 
+def _normalize_model_response(response) -> tuple[str, AIMessage]:
+    """Normalize different model.invoke return shapes to (text, AIMessage)."""
+    # model.invoke can return an AIMessage-like object, a list, or other types.
+    item = None
+    if isinstance(response, list):
+        item = response[0] if len(response) > 0 else response
+    else:
+        item = response
+
+    if hasattr(item, "content"):
+        text = item.content
+    else:
+        text = str(item)
+
+    ai_msg = AIMessage(content=text)
+    return text, ai_msg
+
+
 def categorize_columns_node(state: State, model: BaseChatModel) -> State:
     """Node that categorizes selected columns using few-shot prompting."""
     selected_columns = state.get("selected_columns", [])
@@ -125,7 +143,7 @@ def categorize_columns_node(state: State, model: BaseChatModel) -> State:
     
     # Call Google Gemini
     response = model.invoke([message])
-    response_text = response.content if hasattr(response, 'content') else str(response)
+    response_text, ai_msg = _normalize_model_response(response)
     
     # Parse JSON response
     try:
@@ -167,7 +185,7 @@ def categorize_columns_node(state: State, model: BaseChatModel) -> State:
             print(f"Warning: No JSON found in response. Response: {response_text[:200]}")
     
     return {
-        "messages": [message, response],
+        "messages": [message, ai_msg],
         "selected_columns": selected_columns,
         "column_types": column_types,
         "csv_data": csv_data,
@@ -251,7 +269,7 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
     
     # Call Google Gemini
     response = model.invoke([message])
-    response_text = response.content if hasattr(response, 'content') else str(response)
+    response_text, ai_msg = _normalize_model_response(response)
     
     # Parse JSON response
     try:
@@ -296,7 +314,7 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
     analysis_result = format_chart_analysis(selected_columns, column_types, chart_specs)
     
     return {
-        "messages": [message, response],
+        "messages": [message, ai_msg],
         "selected_columns": selected_columns,
         "column_types": column_types,
         "csv_data": state.get("csv_data", ""),
@@ -399,7 +417,7 @@ def process_csv_with_column_selection(
     
     Args:
         csv_path: Path to the CSV file
-        selected_columns: List of column names to analyze (up to 3)
+        selected_columns: List of column names to analyze (up to 5)
         output_file: Optional path to save the results
     """
     # Load CSV
@@ -496,8 +514,8 @@ if __name__ == "__main__":
     
     # Check for CSV file path
     if len(sys.argv) < 2:
-        print("Usage: python csv_langraph_processor.py <csv_file_path> [column1] [column2] [column3] [output_file]")
-        print("\nExample: python csv_langraph_processor.py data.csv name age city output.txt")
+        print("Usage: python csv_llm_backend.py <csv_file_path> [column1] [column2] [column3] [column4] [column5] [output_file]")
+        print("\nExample: python csv_llm_backend.py data.csv name age city region output.txt")
         print("\nNote: You can select 2-5 columns from your CSV file.")
         print("      If columns are not provided, available columns will be displayed.")
         sys.exit(1)
@@ -518,14 +536,14 @@ if __name__ == "__main__":
     # Get columns from command line or show available columns
     if len(sys.argv) >= 3:
         # Parse arguments: columns come first, optional output file at the end
-        # Strategy: take up to 3 arguments after csv_file, check if last one is a file path
+        # Strategy: take up to 5 arguments after csv_file, check if last one is a file path
         args_after_csv = sys.argv[2:]
         selected_columns = []
         output_file = None
         
         for arg in args_after_csv:
             # Check if it's a column name
-            if arg in df.columns and len(selected_columns) < 3:
+            if arg in df.columns and len(selected_columns) < 5:
                 selected_columns.append(arg)
             # Check if it looks like a file path (has extension or is last arg)
             elif (arg.endswith('.txt') or arg.endswith('.json') or 
@@ -534,7 +552,7 @@ if __name__ == "__main__":
                 break
             else:
                 # If not a column and not clearly a file, assume it's a column name anyway
-                if len(selected_columns) < 3:
+                if len(selected_columns) < 5:
                     selected_columns.append(arg)
         
         if len(selected_columns) == 0:
@@ -549,8 +567,8 @@ if __name__ == "__main__":
             print(f"  {i}. {col}")
         print("-" * 50)
         print("\nPlease provide column names as arguments.")
-        print("Usage: python csv_langraph_processor.py <csv_file> <column1> [column2] [column3] [output_file]")
-        print(f"\nExample: python csv_langraph_processor.py {csv_file} {df.columns[0]} {df.columns[1] if len(df.columns) > 1 else ''}")
+        print("Usage: python csv_llm_backend.py <csv_file> <column1> [column2] [column3] [column4] [column5] [output_file]")
+        print(f"\nExample: python csv_llm_backend.py {csv_file} {df.columns[0]} {df.columns[1] if len(df.columns) > 1 else ''}")
         sys.exit(1)
     
     # Process the CSV
