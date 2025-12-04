@@ -72,86 +72,111 @@ def get_column_sample_data(df: pd.DataFrame, columns: List[str], max_rows: int =
     return sample_df.to_string(index=False)
 
 
-def create_categorization_few_shot_prompt() -> str:
-    """Dataset-agnostic prompt for column categorization."""
-    return """You are helping to prepare arbitrary CSV datasets for visualization.
+def create_vega_lite_few_shot_prompt() -> str:
+    """Create few-shot, rule-based prompt for Vega-Lite chart generation."""
+    return """You are an expert data visualization system. Your job is to recommend a small set of Vega-Lite charts for the given columns.
 
-You will be given:
-- Columns: a list of column names from a CSV file.
-- Data sample: a small table with example rows for those columns.
+You MUST obey these rules:
 
-Your task:
-For EACH column, assign exactly ONE of these types:
+GENERAL RULES
+- Use ONLY the fields that appear in Columns.
+- Column types are one of: "categorical", "temporal", "numerical".
+- Never invent new fields, new derived columns, or new aggregations that are not clearly implied (e.g. no ratios, no percentages).
+- If no meaningful chart can be made, return: {"chart_types": []}
+- Return AT MOST 3 chart_types.
+- Always include the provided Sample Data in data.values for each Vega-Lite spec.
+- Do NOT include any extra text outside the JSON object.
 
-- "categorical"
-  → text labels, categories, enums, IDs, institution names, course names, regions,
-    values that represent groups rather than magnitudes
-- "numerical"
-  → real-valued or integer quantities that can be aggregated (e.g., counts, totals,
-    scores, hours, percentages)
-- "temporal"
-  → dates, times, years, timestamps (e.g., "2024-01-01", "2023-09", "2024-01-01 10:00:00")
+COLUMN SUBSETS
+- You are given up to 5 columns.
+- You do NOT need to use all columns in every chart.
+- You may choose:
+  - 2-column combinations (e.g., 1 categorical + 1 numerical, or 2 numerical),
+  - 3-column combinations (e.g., 2 categoricals + 1 numerical),
+  - or a single numerical column (for histograms).
+- Prefer to choose one or two meaningful column combinations and generate multiple chart types that show different perspectives of the SAME combination (for example, bar + heatmap + faceted bar for Institution / Course / TOTAL), rather than completely unrelated combinations.
 
-Special rules:
-- If a column is stored as a number but represents a discrete entity
-  (e.g., institution codes, IDs, categories encoded as 1, 2, 3),
-  treat it as "categorical", NOT "numerical".
-- Columns like "TOTAL", "Number of X", "count", "score", "revenue", "temperature"
-  are usually "numerical".
-- Columns like "Course Name", "Student Type", "Gender", "Institution", "Region"
-  are usually "categorical".
-- Date-like strings (e.g., "2024-01-01", "Jan 2024", "2023-09-05 10:30") are "temporal".
+CHART SELECTION RULES (CompassQL-style)
+- Categorical + Numerical → Bar Chart or Box Plot
+  - Put the categorical field on the x axis.
+  - Put the numerical field on the y axis.
+  - Aggregation on y (if used) should be "sum" or "mean" only.
 
-Output format:
-Return ONLY valid JSON with this structure:
+- Temporal + Numerical → Line Chart or Area Chart
+  - Put the temporal field on the x axis (type: "temporal").
+  - Put the numerical field on the y axis (type: "quantitative").
+  - Use a line or area mark, not bar.
+
+- Numerical + Numerical → Scatter Plot
+  - x and y should both be numerical.
+  - No aggregation on x or y.
+
+- Single Numerical Column → Histogram
+  - Use bin: true on the numerical field.
+  - y should be aggregate: "count".
+
+- Two Categorical + One Numerical → Heatmap OR Grouped/Stacked Bar
+  - Use one categorical on x, the other on y or color.
+  - Color or height should encode the numerical field (usually aggregate: "sum").
+
+OUTPUT FORMAT
+You must return EXACTLY one JSON object with this structure:
 
 {
-  "<column_name_1>": "<categorical|numerical|temporal>",
-  "<column_name_2>": "<categorical|numerical|temporal>",
-  ...
+  "chart_types": [
+    {
+      "name": "<Chart Name>",
+      "description": "<1–3 sentence description of what the chart shows>",
+      "strengths": ["<bullet 1>", "<bullet 2>"],
+      "weaknesses": ["<bullet 1>", "<bullet 2>"],
+      "vega_lite_spec": {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": {"values": [/* use the Sample Data records */]},
+        "mark": "<vega-lite mark, e.g. 'bar', 'line', 'point', 'rect', 'boxplot'>",
+        "encoding": {
+          // encodings consistent with the column types and rules above
+        },
+        "title": "<short, human-readable title>"
+      }
+    }
+  ]
 }
 
-Rules for the output:
-- Use each column name exactly as it appears in the Columns list
-  (do NOT change spelling, capitalization, or spacing).
-- Do NOT invent any new columns.
-- Do NOT include any extra keys or text outside the JSON.
-- Do NOT wrap the JSON in Markdown code fences.
+Few-shot example (for structure only):
 
-Few-shot examples:
+Columns: ["city", "sales"]
+Column Types: {"city": "categorical", "sales": "numerical"}
 
-Example 1:
-Columns: ["name", "age", "city"]
-Data sample:
-name    age  city
-John    28   New York
-Jane    32   Los Angeles
+Expected (schematic) response:
 
-Response:
-{"name": "categorical", "age": "numerical", "city": "categorical"}
+{
+  "chart_types": [
+    {
+      "name": "Bar Chart: Total Sales by City",
+      "description": "Shows total sales for each city, allowing comparison of performance across locations.",
+      "strengths": [
+        "Easy to compare values across cities",
+        "Works well with a moderate number of categories"
+      ],
+      "weaknesses": [
+        "Can be cluttered with too many cities",
+        "Does not show trends over time"
+      ],
+      "vega_lite_spec": {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": {"values": []},
+        "mark": "bar",
+        "encoding": {
+          "x": {"field": "city", "type": "ordinal", "title": "City"},
+          "y": {"field": "sales", "type": "quantitative", "aggregate": "sum", "title": "Total Sales"}
+        },
+        "title": "Total Sales by City"
+      }
+    }
+  ]
+}
 
-Example 2:
-Columns: ["date", "sales", "region"]
-Data sample:
-date        sales  region
-2024-01-01  1500   North
-2024-01-02  2300   South
-
-Response:
-{"date": "temporal", "sales": "numerical", "region": "categorical"}
-
-Example 3:
-Columns: ["timestamp", "temperature", "humidity"]
-Data sample:
-timestamp           temperature  humidity
-2024-01-01 10:00:00 72.5        45.2
-2024-01-01 11:00:00 73.1        46.1
-
-Response:
-{"timestamp": "temporal", "temperature": "numerical", "humidity": "numerical"}
-
-Now analyze the given Columns and Data sample and return ONLY the JSON object.
-"""
+Now generate chart recommendations for:"""
 
 
 def _normalize_model_response(response) -> tuple[str, AIMessage]:
@@ -253,6 +278,15 @@ GENERAL RULES
 - Return AT MOST 3 chart_types.
 - Always include the provided Sample Data in data.values for each Vega-Lite spec.
 - Do NOT include any extra text outside the JSON object.
+
+COLUMN SUBSETS
+- You are given up to 5 columns.
+- You do NOT need to use all columns in every chart.
+- You may choose:
+  - 2-column combinations (e.g., 1 categorical + 1 numerical, or 2 numerical),
+  - 3-column combinations (e.g., 2 categoricals + 1 numerical),
+  - or a single numerical column (for histograms).
+- Prefer to choose one or two meaningful column combinations and generate multiple chart types that show different perspectives of the SAME combination (for example, bar + heatmap + faceted bar for Institution / Course / TOTAL), rather than completely unrelated combinations.
 
 CHART SELECTION RULES (CompassQL-style)
 - Categorical + Numerical → Bar Chart or Box Plot
