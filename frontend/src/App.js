@@ -225,7 +225,7 @@ export default function CSVAnalyzer() {
     <div className="app-container">
       <div className="content-wrapper">
         <div className="header">
-          <h1 className="main-title">CSV Data Analyzer</h1>
+          <h1 className="main-title">MercuryViz - AI Driven Chart Recommender</h1>
           <p className="subtitle">
             Upload your CSV file and select columns to generate chart recommendations
           </p>
@@ -301,22 +301,12 @@ export default function CSVAnalyzer() {
         {results && (
           <div>
             <div className="results-section">
-              <h2 className="section-heading">Column Types</h2>
-              <div className="column-types-grid">
-                {Object.entries(results.column_types || {}).map(([col, type]) => (
-                  <div key={col} className="column-type-card">
-                    <p className="column-name">{col}</p>
-                    <p className="column-type">{type}</p>
-                  </div>
+              <h2 className="section-heading">Chart Recommendations</h2>
+              <div className="charts-grid">
+                {results.chart_specs?.chart_types?.map((chart, index) => (
+                  <ChartCard key={index} chart={chart} index={index} />
                 ))}
               </div>
-            </div>
-
-            <h2 className="section-heading">Chart Recommendations</h2>
-            <div className="charts-grid">
-              {results.chart_specs?.chart_types?.map((chart, index) => (
-                <ChartCard key={index} chart={chart} index={index} />
-              ))}
             </div>
           </div>
         )}
@@ -324,166 +314,3 @@ export default function CSVAnalyzer() {
     </div>
   );
 }
-
-// import React, { useState } from 'react';
-// import ChartRenderer from './ChartRenderer.jsx';
-// import './App.css'; // Create this CSS file for styling
-
-// const API_ENDPOINT = 'http://127.0.0.1:5000/analyze_csv'; 
-
-// const CsvAnalyzer = () => {
-//     // State to hold user inputs
-//     const [csvFile, setCsvFile] = useState(null);
-//     const [columnsInput, setColumnsInput] = useState('');
-    
-//     // State for application flow
-//     const [charts, setCharts] = useState([]);
-//     const [isLoading, setIsLoading] = useState(false);
-//     const [error, setError] = useState(null);
-
-//     // --- Handlers ---
-
-//     const handleFileChange = (event) => {
-//         setCsvFile(event.target.files[0]);
-//     };
-
-//     const handleColumnsChange = (event) => {
-//         setColumnsInput(event.target.value);
-//     };
-
-//     const handleSubmit = async (event) => {
-//         event.preventDefault();
-        
-//         setError(null);
-//         setCharts([]);
-//         setIsLoading(true);
-
-//         // 1. Validate inputs
-//         const selectedColumns = columnsInput
-//             .split(',')
-//             .map(col => col.trim())
-//             .filter(col => col.length > 0);
-
-//         if (!csvFile) {
-//             setError("Please select a CSV file.");
-//             setIsLoading(false);
-//             return;
-//         }
-
-//         if (selectedColumns.length < 2 || selectedColumns.length > 5) {
-//             setError("Please select between 2 and 5 columns.");
-//             setIsLoading(false);
-//             return;
-//         }
-
-//         // 2. Prepare FormData for multipart/form-data upload
-//         const formData = new FormData();
-//         formData.append('file', csvFile);
-//         // Columns must be sent as a JSON string for Flask to easily parse it
-//         formData.append('columns', JSON.stringify(selectedColumns));
-
-//         // 3. Send request to Flask API
-//         try {
-//             const response = await fetch(API_ENDPOINT, {
-//                 method: 'POST',
-//                 body: formData,
-//                 // Do NOT set Content-Type header; 'fetch' handles 'multipart/form-data' boundary automatically
-//             });
-
-//             if (!response.ok) {
-//                 // Try to read JSON error from Flask
-//                 const errorData = await response.json();
-//                 throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
-//             }
-
-//             const result = await response.json();
-            
-//             // The API returns the whole 'chart_specs' object.
-//             setCharts(result.chart_types || []); 
-            
-//         } catch (err) {
-//             console.error('API Error:', err);
-//             setError(`Analysis failed: ${err.message}. Check your API server.`);
-//             setCharts([]);
-//         } finally {
-//             setIsLoading(false);
-//         }
-//     };
-
-//     return (
-//         <div className="analyzer-container">
-//             <header>
-//                 <h1>📊 Gemini-Powered Data Visualization</h1>
-//                 <p>Upload a CSV, select 2-5 columns, and get LLM-generated Vega-Lite charts.</p>
-//             </header>
-            
-//             <form onSubmit={handleSubmit} className="input-form">
-//                 <div className="input-group">
-//                     <label htmlFor="csvFile">Select CSV File:</label>
-//                     <input 
-//                         type="file" 
-//                         id="csvFile" 
-//                         accept=".csv" 
-//                         onChange={handleFileChange} 
-//                         required 
-//                     />
-//                 </div>
-
-//                 <div className="input-group">
-//                     <label htmlFor="columnsInput">
-//                         Columns to Analyze (2-5, comma-separated):
-//                     </label>
-//                     <input 
-//                         type="text" 
-//                         id="columnsInput"
-//                         placeholder="e.g., date, sales, region" 
-//                         value={columnsInput}
-//                         onChange={handleColumnsChange}
-//                         required
-//                     />
-//                 </div>
-                
-//                 <button 
-//                     type="submit" 
-//                     disabled={isLoading || !csvFile || columnsInput.length === 0}
-//                     className="submit-button"
-//                 >
-//                     {isLoading ? 'Analyzing Data with LLM...' : 'Run Analysis'}
-//                 </button>
-                
-//                 {error && <p className="error-message">⚠️ {error}</p>}
-                
-//             </form>
-
-//             {/* --- Results Section --- */}
-//             <hr />
-            
-//             <div className="results-section">
-//                 <h2>Generated Charts ({charts.length})</h2>
-                
-//                 {isLoading && (
-//                     <div className="loading-state">
-//                         <div className="spinner"></div>
-//                         <p>Processing data and generating charts with Gemini... This can take up to 20 seconds.</p>
-//                     </div>
-//                 )}
-                
-//                 {!isLoading && charts.length === 0 && !error && (
-//                     <p>Ready to analyze. Upload your file and select columns to begin.</p>
-//                 )}
-
-//                 <div className="charts-grid">
-//                     {charts.map((chart, index) => (
-//                         <ChartRenderer 
-//                             key={index} 
-//                             chartData={chart} 
-//                             index={index} 
-//                         />
-//                     ))}
-//                 </div>
-//             </div>
-//         </div>
-//     );
-// };
-
-// export default CsvAnalyzer;

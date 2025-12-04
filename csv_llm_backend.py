@@ -30,14 +30,9 @@ class State(TypedDict):
     csv_df: Optional[pd.DataFrame]
     selected_columns: List[str]
     column_types: dict
+    column_pairings: dict  # New field for column pairings analysis
     chart_specs: dict
     analysis_result: str
-
-
-def estimate_tokens(text: str, model: str = "gemini-2.5-flash-lite") -> int:
-    """Estimate the number of tokens in a text string."""
-    # Gemini uses a rough estimate: 1 token ≈ 4 characters
-    return len(text) // 4
 
 
 def load_csv_dataframe(csv_path: str) -> tuple[Optional[pd.DataFrame], Optional[str]]:
@@ -188,6 +183,106 @@ def categorize_columns_node(state: State, model: BaseChatModel) -> State:
         "messages": [message, ai_msg],
         "selected_columns": selected_columns,
         "column_types": column_types,
+        "column_pairings": state.get("column_pairings", {}),
+        "csv_data": csv_data,
+        "csv_df": state.get("csv_df"),
+        "chart_specs": state.get("chart_specs", {}),
+        "analysis_result": state.get("analysis_result", "")
+    }
+
+
+def analyze_column_pairings_node(state: State, model: BaseChatModel) -> State:
+    """Node that analyzes column pairings and provides explanations for each pairing."""
+    selected_columns = state.get("selected_columns", [])
+    column_types = state.get("column_types", {})
+    csv_data = state.get("csv_data", "")
+    
+    pairing_prompt = """You are an expert data analyst. Analyze the provided columns and their types, then recommend meaningful column pairings for visualization.
+
+For each pairing, provide:
+1. The column names in the pairing
+2. An explanation of why this pairing is meaningful
+3. What insights or relationships this pairing can reveal
+4. Recommended chart types that would work well for this pairing
+
+Consider:
+- Numerical vs Numerical: Can show correlations, trends, distributions
+- Categorical vs Numerical: Can show comparisons, distributions by category
+- Categorical vs Categorical: Can show relationships, frequencies, cross-tabulations
+- Temporal vs Numerical: Can show trends over time
+- Temporal vs Categorical: Can show changes in categories over time
+
+Generate pairings for 2-column combinations, 3-column combinations (if applicable), and explain why each is valuable.
+
+Return ONLY a JSON object in this format:
+{
+  "pairings": [
+    {
+      "columns": ["column1", "column2"],
+      "explanation": "Why this pairing is meaningful...",
+      "insights": "What insights this pairing can reveal...",
+      "recommended_chart_types": ["Bar Chart", "Scatter Plot"]
+    }
+  ]
+}"""
+    
+    message = HumanMessage(
+        content=f"{pairing_prompt}\n\n"
+                f"Selected Columns: {json.dumps(selected_columns)}\n"
+                f"Column Types: {json.dumps(column_types)}\n"
+                f"Data Sample:\n{csv_data}\n\n"
+                f"Analyze all meaningful pairings and return the JSON object."
+    )
+    
+    # Call Google Gemini
+    response = model.invoke([message])
+    response_text, ai_msg = _normalize_model_response(response)
+    
+    # Parse JSON response
+    try:
+        # Extract JSON from response
+        if "```json" in response_text:
+            json_start = response_text.find("```json") + 7
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        elif "```" in response_text:
+            json_start = response_text.find("```") + 3
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        
+        column_pairings = json.loads(response_text)
+    except json.JSONDecodeError:
+        # Fallback: try to extract JSON object
+        import re
+        brace_start = response_text.find('{')
+        if brace_start != -1:
+            brace_count = 0
+            brace_end = brace_start
+            for i in range(brace_start, len(response_text)):
+                if response_text[i] == '{':
+                    brace_count += 1
+                elif response_text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        brace_end = i + 1
+                        break
+            try:
+                json_str = response_text[brace_start:brace_end]
+                column_pairings = json.loads(json_str)
+            except:
+                column_pairings = {"pairings": []}
+                print(f"Warning: Could not parse column pairings. Response: {response_text[:500]}")
+        else:
+            column_pairings = {"pairings": []}
+            print(f"Warning: No JSON found in pairings response.")
+    
+    print(f"\n✓ Analyzed {len(column_pairings.get('pairings', []))} column pairings")
+    
+    return {
+        "messages": [message, ai_msg],
+        "selected_columns": selected_columns,
+        "column_types": column_types,
+        "column_pairings": column_pairings,
         "csv_data": csv_data,
         "csv_df": state.get("csv_df"),
         "chart_specs": state.get("chart_specs", {}),
@@ -218,13 +313,14 @@ Few-shot example:
 
 Columns: ["city", "sales"]
 Column Types: {"city": "categorical", "sales": "numerical"}
+Column Pairing: {"columns": ["city", "sales"], "explanation": "This pairing compares sales across different cities", "insights": "Reveals which cities have highest/lowest sales performance"}
 
 Response format:
 {
   "chart_types": [
     {
       "name": "Bar Chart",
-      "description": "A bar chart displays categorical data with rectangular bars...",
+      "description": "A bar chart displays categorical data with rectangular bars. This chart visualizes the pairing of city and sales columns, revealing which cities have the highest and lowest sales performance. The pairing analysis shows this combination is valuable for comparing sales across different cities, and this bar chart effectively highlights those performance differences.",
       "strengths": ["Easy to compare values", "Works well with many categories"],
       "weaknesses": ["Can be cluttered with too many categories", "Not ideal for temporal data"],
       "vega_lite_spec": {
@@ -247,6 +343,7 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
     """Node that generates Vega-Lite JSON specifications for different chart types."""
     selected_columns = state.get("selected_columns", [])
     column_types = state.get("column_types", {})
+    column_pairings = state.get("column_pairings", {})
     csv_df = state.get("csv_df")
     
     # Get sample data values for Vega-Lite
@@ -257,12 +354,42 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
     
     few_shot_prompt = create_vega_lite_few_shot_prompt()
     
+    # Include column pairings information in the prompt
+    pairings_text = ""
+    if column_pairings and column_pairings.get("pairings"):
+        pairings_text = "\n\nColumn Pairings Analysis:\n"
+        for i, pairing in enumerate(column_pairings.get("pairings", []), 1):
+            pairings_text += f"\n{i}. Pairing: {', '.join(pairing.get('columns', []))}\n"
+            pairings_text += f"   Explanation: {pairing.get('explanation', 'N/A')}\n"
+            pairings_text += f"   Insights: {pairing.get('insights', 'N/A')}\n"
+            pairings_text += f"   Recommended Charts: {', '.join(pairing.get('recommended_chart_types', []))}\n"
+    
+    # Enhanced prompt that asks to include pairing insights in chart descriptions
+    pairing_instruction = ""
+    if column_pairings and column_pairings.get("pairings"):
+        pairing_instruction = (
+            "\n\nIMPORTANT: For each chart you generate, you MUST:\n"
+            "1. Identify which column pairing(s) this chart is based on\n"
+            "2. Include the pairing insights in the chart description\n"
+            "3. Explain how this chart reveals the insights mentioned in the pairing analysis\n"
+            "4. Reference the specific pairing explanation when describing what the chart shows\n\n"
+            "The chart description should connect the pairing insights to the visualization, "
+            "helping users understand why this particular chart is valuable for exploring the data."
+        )
+    
     message = HumanMessage(
         content=f"{few_shot_prompt}\n\n"
                 f"Columns: {json.dumps(selected_columns)}\n"
                 f"Column Types: {json.dumps(column_types)}\n"
+                f"{pairings_text}\n"
+                f"{pairing_instruction}\n"
                 f"Sample Data (first 100 rows): {json.dumps(sample_data)}\n\n"
                 f"Generate 3-5 appropriate chart types with complete Vega-Lite JSON specifications. "
+                f"For each chart, make sure to:\n"
+                f"- Reference the relevant column pairing(s) it visualizes\n"
+                f"- Include the pairing insights in the description\n"
+                f"- Explain how the chart reveals the insights from the pairing analysis\n"
+                f"- Connect the pairing explanation to what the chart shows\n"
                 f"Include the sample data in the 'values' field of each Vega-Lite spec. "
                 f"Return ONLY a JSON object following the format shown above."
     )
@@ -317,6 +444,7 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
         "messages": [message, ai_msg],
         "selected_columns": selected_columns,
         "column_types": column_types,
+        "column_pairings": column_pairings,
         "csv_data": state.get("csv_data", ""),
         "csv_df": csv_df,
         "chart_specs": chart_specs,
@@ -394,13 +522,15 @@ def create_csv_processing_graph():
     
     # Add nodes
     workflow.add_node("categorize_columns", lambda state: categorize_columns_node(state, model))
+    workflow.add_node("analyze_column_pairings", lambda state: analyze_column_pairings_node(state, model))
     workflow.add_node("generate_charts", lambda state: generate_charts_node(state, model))
     
     # Set entry point
     workflow.set_entry_point("categorize_columns")
     
     # Add edges
-    workflow.add_edge("categorize_columns", "generate_charts")
+    workflow.add_edge("categorize_columns", "analyze_column_pairings")
+    workflow.add_edge("analyze_column_pairings", "generate_charts")
     workflow.add_edge("generate_charts", END)
     
     # Compile the graph
@@ -452,6 +582,7 @@ def process_csv_with_column_selection(
         "csv_df": df,
         "selected_columns": selected_columns,
         "column_types": {},
+        "column_pairings": {},
         "chart_specs": {},
         "analysis_result": ""
     }
@@ -459,7 +590,8 @@ def process_csv_with_column_selection(
     # Run the workflow
     print("Processing columns with Google Gemini...")
     print("  Step 1: Categorizing columns...")
-    print("  Step 2: Generating chart recommendations...")
+    print("  Step 2: Analyzing column pairings...")
+    print("  Step 3: Generating chart recommendations...")
     
     try:
         result = app.invoke(initial_state)
