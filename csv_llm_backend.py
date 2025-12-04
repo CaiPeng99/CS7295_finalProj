@@ -95,14 +95,14 @@ date        sales  region
 Response: {"date": "temporal", "sales": "numerical", "region": "categorical"}
 
 Example 3:
-Columns: ["timestamp", "temperature", "humidity"]
+Columns: ["timestamp", "temperature", "location"]
 Data sample:
-timestamp           temperature  humidity
-2024-01-01 10:00:00 72.5        45.2
-2024-01-01 11:00:00 73.1        46.1
-Response: {"timestamp": "temporal", "temperature": "numerical", "humidity": "numerical"}
+timestamp           temperature  location
+2024-01-01 10:00:00 72.5        Office A
+2024-01-01 11:00:00 73.2        Office B
+Response: {"timestamp": "temporal", "temperature": "numerical", "location": "categorical"}
 
-Now analyze the following columns and return ONLY a JSON object with the categorization:"""
+Now categorize the following columns:"""
 
 
 def _normalize_model_response(response) -> tuple[str, AIMessage]:
@@ -146,11 +146,17 @@ def categorize_columns_node(state: State, model: BaseChatModel) -> State:
         if "```json" in response_text:
             json_start = response_text.find("```json") + 7
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         elif "```" in response_text:
             json_start = response_text.find("```") + 3
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         
         column_types = json.loads(response_text)
     except json.JSONDecodeError:
@@ -244,11 +250,17 @@ Return ONLY a JSON object in this format:
         if "```json" in response_text:
             json_start = response_text.find("```json") + 7
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         elif "```" in response_text:
             json_start = response_text.find("```") + 3
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         
         column_pairings = json.loads(response_text)
     except json.JSONDecodeError:
@@ -291,46 +303,101 @@ Return ONLY a JSON object in this format:
 
 
 def create_vega_lite_few_shot_prompt() -> str:
-    """Create few-shot examples for Vega-Lite chart generation."""
-    return """You are an expert data visualization specialist. Generate Vega-Lite JSON specifications for different chart types based on column types.
+    """Create few-shot, rule-based prompt for Vega-Lite chart generation."""
+    return """You are an expert data visualization system. Your job is to recommend a small set of Vega-Lite charts for the given columns.
 
-Chart Types to consider:
-1. Bar Chart - Good for categorical vs numerical comparisons
-2. Line Chart - Good for temporal data with numerical values
-3. Scatter Plot - Good for numerical vs numerical relationships
-4. Histogram - Good for distribution of numerical data
-5. Box Plot - Good for distribution comparison across categories
-6. Heatmap - Good for categorical vs categorical with numerical values
-7. Area Chart - Good for temporal data showing cumulative values
+You MUST obey these rules:
 
-For each chart type, provide:
-- The Vega-Lite JSON specification
-- Strengths: What this chart type excels at
-- Weaknesses: Limitations of this chart type
-- Description: What this chart type is and when to use it
+GENERAL RULES
+- Use ONLY the fields that appear in Columns.
+- Column types are one of: "categorical", "temporal", "numerical".
+- Never invent new fields, new derived columns, or new aggregations that are not clearly implied (e.g. no ratios, no percentages).
+- If no meaningful chart can be made, return: {"chart_types": []}
+- Return AT MOST 3 chart_types.
+- Always include the provided Sample Data in data.values for each Vega-Lite spec.
+- Do NOT include any extra text outside the JSON object.
 
-Few-shot example:
+COLUMN SUBSETS
+- You are given up to 5 columns.
+- You do NOT need to use all columns in every chart.
+- You may choose:
+  - 2-column combinations (e.g., 1 categorical + 1 numerical, or 2 numerical),
+  - 3-column combinations (e.g., 2 categoricals + 1 numerical),
+  - or a single numerical column (for histograms).
+- Prefer to choose one or two meaningful column combinations and generate multiple chart types that show different perspectives of the SAME combination (for example, bar + heatmap + faceted bar for Institution / Course / TOTAL), rather than completely unrelated combinations.
+
+CHART SELECTION RULES (CompassQL-style)
+- Categorical + Numerical → Bar Chart or Box Plot
+  - Put the categorical field on the x axis.
+  - Put the numerical field on the y axis.
+  - Aggregation on y (if used) should be "sum" or "mean" only.
+- Temporal + Numerical → Line Chart or Area Chart
+  - Put the temporal field on the x axis (type: "temporal").
+  - Put the numerical field on the y axis (type: "quantitative").
+  - Use a line or area mark, not bar.
+- Numerical + Numerical → Scatter Plot
+  - x and y should both be numerical.
+  - No aggregation on x or y.
+- Single Numerical Column → Histogram
+  - Use bin: true on the numerical field.
+  - y should be aggregate: "count".
+- Two Categorical + One Numerical → Heatmap OR Grouped/Stacked Bar
+  - Use one categorical on x, the other on y or color.
+  - Color or height should encode the numerical field (usually aggregate: "sum").
+
+OUTPUT FORMAT
+You must return EXACTLY one JSON object with this structure:
+
+{
+  "chart_types": [
+    {
+      "name": "<Chart Name>",
+      "description": "<1–3 sentence description of what the chart shows>",
+      "strengths": ["<bullet 1>", "<bullet 2>"],
+      "weaknesses": ["<bullet 1>", "<bullet 2>"],
+      "vega_lite_spec": {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": {"values": [/* use the Sample Data records */]},
+        "mark": "<vega-lite mark, e.g. 'bar', 'line', 'point', 'rect', 'boxplot'>",
+        "encoding": {
+          // encodings consistent with the column types and rules above
+        },
+        "title": "<short, human-readable title>"
+      }
+    }
+  ]
+}
+
+Few-shot example (for structure only):
 
 Columns: ["city", "sales"]
 Column Types: {"city": "categorical", "sales": "numerical"}
 Column Pairing: {"columns": ["city", "sales"], "explanation": "This pairing compares sales across different cities", "insights": "Reveals which cities have highest/lowest sales performance"}
 
-Response format:
+Expected (schematic) response:
+
 {
   "chart_types": [
     {
-      "name": "Bar Chart",
-      "description": "A bar chart displays categorical data with rectangular bars. This chart visualizes the pairing of city and sales columns, revealing which cities have the highest and lowest sales performance. The pairing analysis shows this combination is valuable for comparing sales across different cities, and this bar chart effectively highlights those performance differences.",
-      "strengths": ["Easy to compare values", "Works well with many categories"],
-      "weaknesses": ["Can be cluttered with too many categories", "Not ideal for temporal data"],
+      "name": "Bar Chart: Total Sales by City",
+      "description": "Shows total sales for each city, allowing comparison of performance across locations.",
+      "strengths": [
+        "Easy to compare values across cities",
+        "Works well with a moderate number of categories"
+      ],
+      "weaknesses": [
+        "Can be cluttered with too many cities",
+        "Does not show trends over time"
+      ],
       "vega_lite_spec": {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "data": {"values": []},
         "mark": "bar",
         "encoding": {
-          "x": {"field": "city", "type": "ordinal"},
-          "y": {"field": "sales", "type": "quantitative"}
-        }
+          "x": {"field": "city", "type": "ordinal", "title": "City"},
+          "y": {"field": "sales", "type": "quantitative", "aggregate": "sum", "title": "Total Sales"}
+        },
+        "title": "Total Sales by City"
       }
     }
   ]
@@ -404,11 +471,17 @@ def generate_charts_node(state: State, model: BaseChatModel) -> State:
         if "```json" in response_text:
             json_start = response_text.find("```json") + 7
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         elif "```" in response_text:
             json_start = response_text.find("```") + 3
             json_end = response_text.find("```", json_start)
-            response_text = response_text[json_start:json_end].strip()
+            if json_end == -1:
+                response_text = response_text[json_start:].strip()
+            else:
+                response_text = response_text[json_start:json_end].strip()
         
         chart_specs = json.loads(response_text)
     except json.JSONDecodeError:
